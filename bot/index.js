@@ -1,5 +1,5 @@
 const { Bot, GrammyError, HttpError } = require('grammy');
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '.env'), override: true });
 
 const db = require('./db');
 const kb = require('./keyboards');
