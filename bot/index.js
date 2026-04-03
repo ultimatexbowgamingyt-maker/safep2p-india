@@ -1,4 +1,4 @@
-const { Bot, session, GrammyError, HttpError } = require('grammy');
+const { Bot, GrammyError, HttpError } = require('grammy');
 require('dotenv').config();
 
 const db = require('./db');
@@ -6,15 +6,19 @@ const kb = require('./keyboards');
 
 const bot = new Bot(process.env.BOT_TOKEN);
 
-// ─── Session ───
-bot.use(session({
-  initial: () => ({
-    step: null,        // current conversation step
-    offerDraft: null,  // offer being created
-    tradeAmount: null,  // amount being traded
-    selectedPayments: [], // selected payment methods
-  }),
-}));
+// ─── In-memory session ───
+const sessions = {};
+function getSession(chatId) {
+  if (!sessions[chatId]) {
+    sessions[chatId] = { step: null, offerDraft: null, tradeAmount: null, selectedPayments: [] };
+  }
+  return sessions[chatId];
+}
+
+bot.use((ctx, next) => {
+  if (ctx.chat) ctx.session = getSession(ctx.chat.id);
+  return next();
+});
 
 // ─── Helper ───
 function formatINR(n) {
