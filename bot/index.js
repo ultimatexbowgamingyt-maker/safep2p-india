@@ -75,13 +75,13 @@ function getTraderTier(user) {
   };
   if (trades < 50) return {
     tier: 'pro', label: '💎 Pro Trader',
-    maxActiveTrades: 5, minTrade: 1000, maxTrade: 200000,
-    desc: 'Limit: ₹1,000–₹2,00,000, 5 trades at a time.',
+    maxActiveTrades: 5, minTrade: 1000, maxTrade: 15000,
+    desc: 'Limit: ₹1,000–₹15,000, 5 trades at a time.',
   };
   return {
     tier: 'elite', label: '👑 Elite Trader',
-    maxActiveTrades: 10, minTrade: 1000, maxTrade: null,
-    desc: 'No upper limit, 10 trades at a time.',
+    maxActiveTrades: 10, minTrade: 1000, maxTrade: 15000,
+    desc: 'Limit: ₹1,000–₹15,000, 10 trades at a time.',
   };
 }
 
