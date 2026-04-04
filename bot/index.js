@@ -53,6 +53,60 @@ function calcFee(inrAmount) {
   return Math.round(inrAmount * PLATFORM_FEE_PERCENT / 100);
 }
 
+// ─── Trader Tier System ───
+function getTraderTier(user) {
+  const trades = user.total_trades || 0;
+  const rating = parseFloat(user.rating || 0);
+
+  if (trades === 0) return {
+    tier: 'new', label: '🆕 New Trader',
+    maxActiveTrades: 1, minTrade: 200, maxTrade: 2000,
+    desc: 'First trade! Limit: ₹200–₹2,000, 1 trade at a time.',
+  };
+  if (trades < 5) return {
+    tier: 'beginner', label: '🌱 Beginner',
+    maxActiveTrades: 1, minTrade: 200, maxTrade: 5000,
+    desc: 'Limit: ₹200–₹5,000, 1 trade at a time.',
+  };
+  if (trades < 20) return {
+    tier: 'member', label: '⭐ Member',
+    maxActiveTrades: 3, minTrade: 500, maxTrade: 50000,
+    desc: 'Limit: ₹500–₹50,000, 3 trades at a time.',
+  };
+  if (trades < 50) return {
+    tier: 'pro', label: '💎 Pro Trader',
+    maxActiveTrades: 5, minTrade: 1000, maxTrade: 200000,
+    desc: 'Limit: ₹1,000–₹2,00,000, 5 trades at a time.',
+  };
+  return {
+    tier: 'elite', label: '👑 Elite Trader',
+    maxActiveTrades: 10, minTrade: 1000, maxTrade: null,
+    desc: 'No upper limit, 10 trades at a time.',
+  };
+}
+
+// ─── Badge System ───
+function getBadges(user) {
+  const badges = [];
+  const trades = user.total_trades || 0;
+  const rating = parseFloat(user.rating || 0);
+
+  if (user.kyc_verified) badges.push('✅ KYC');
+  if (rating >= 4.8 && trades >= 5) badges.push('🌟 Top Rated');
+  else if (rating >= 4.5 && trades >= 3) badges.push('⭐ Trusted');
+  if (trades >= 50) badges.push('👑 Elite');
+  else if (trades >= 20) badges.push('💎 Pro');
+  else if (trades >= 5) badges.push('⭐ Member');
+  else badges.push('🆕 New');
+  if (trades >= 100) badges.push('🔥 Veteran');
+
+  return badges;
+}
+
+function getBadgeString(user) {
+  return getBadges(user).join(' ');
+}
+
 // ─── Helper ───
 function formatINR(n) {
   return '₹' + Number(n).toLocaleString('en-IN');
@@ -136,13 +190,14 @@ bot.callbackQuery(/^(buy|sell)_(.+)$/, async (ctx) => {
   let text = `📋 *${crypto} ${offerType.toUpperCase()} Offers:*\n\n`;
   offers.forEach((o, i) => {
     const s = o.seller;
-    const verified = s?.kyc_verified ? '✅' : '';
     const online = s?.is_online ? '🟢' : '⚪';
-    text += `*${i + 1}.* ${online} ${s?.name || 'Trader'} ${verified}\n`;
+    const traderBadges = s ? getBadgeString(s) : '🆕';
+    text += `*${i + 1}.* ${online} *${s?.name || 'Trader'}*\n`;
+    text += `   ${traderBadges}\n`;
     text += `   💰 Rate: ${formatINR(o.rate)} per ${o.crypto}\n`;
     text += `   📊 Limit: ${formatINR(o.min_limit)} – ${formatINR(o.max_limit)}\n`;
     text += `   💳 ${o.payment_methods.join(', ')}\n`;
-    text += `   ⭐ ${s?.rating || 0} | ${s?.total_trades || 0} trades\n\n`;
+    text += `   ⭐ ${s?.rating || 0}/5 | ${s?.total_trades || 0} trades\n\n`;
   });
 
   await ctx.editMessageText(text, {
@@ -198,14 +253,47 @@ bot.callbackQuery(/^start_trade_(.+)$/, async (ctx) => {
   if (!offer) { await ctx.editMessageText('❌ Offer expired.'); return; }
   if (offer.user_id === user.id) { await ctx.editMessageText('❌ You cannot trade with your own offer.'); return; }
 
+  // ── Tier & safety checks ──
+  const tier = getTraderTier(user);
+  const activeTrades = await db.getActiveTradesCount(user.id);
+
+  if (activeTrades >= tier.maxActiveTrades) {
+    await ctx.editMessageText(
+      `⛔ *Trade Limit Reached*\n\n` +
+      `Your tier (${tier.label}) allows *${tier.maxActiveTrades} active trade(s)* at a time.\n\n` +
+      `Complete your current trade(s) first before starting a new one.\n\n` +
+      `💡 Complete more trades to unlock higher limits!`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
   ctx.session.step = 'enter_trade_amount';
   ctx.session.offerDraft = { offerId };
+
+  const minTrade = Math.max(offer.min_limit, tier.minTrade);
+  const maxTrade = tier.maxTrade ? Math.min(offer.max_limit, tier.maxTrade) : offer.max_limit;
+
+  if (minTrade > maxTrade) {
+    await ctx.editMessageText(
+      `⛔ *Trade Not Available for Your Tier*\n\n` +
+      `Your tier (${tier.label}) allows max *${formatINR(tier.maxTrade)}* per trade.\n` +
+      `This offer starts at ${formatINR(offer.min_limit)}.\n\n` +
+      `Complete more trades to unlock higher limits!`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  // Store tier limits in session
+  ctx.session.offerDraft = { offerId, minTrade, maxTrade };
 
   await ctx.editMessageText(
     `💰 *Enter INR amount*\n\n` +
     `Rate: ${formatINR(offer.rate)} per ${offer.crypto}\n` +
-    `Limit: ${formatINR(offer.min_limit)} – ${formatINR(offer.max_limit)}\n\n` +
-    `Type the INR amount you want to trade (e.g. 5000):`,
+    `Offer limit: ${formatINR(offer.min_limit)} – ${formatINR(offer.max_limit)}\n` +
+    `${tier.label} limit: ${formatINR(minTrade)} – ${formatINR(maxTrade)}\n\n` +
+    `Type the INR amount (e.g. ${Math.min(5000, maxTrade)}):`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -605,16 +693,22 @@ bot.hears('👤 Profile', async (ctx) => {
   const reviews = await db.getUserReviews(user.id);
 
   const verified = user.kyc_verified ? '✅ KYC Verified' : '❌ Not Verified';
+  const tier = getTraderTier(user);
+  const badges = getBadgeString(user);
+
   let text =
     `👤 *Your Profile*\n\n` +
     `📛 Name: *${user.name}*\n` +
+    `🏅 Tier: *${tier.label}*\n` +
+    `🎖️ Badges: ${badges}\n` +
     `${verified}\n` +
     `⭐ Rating: ${user.rating || 0}/5\n` +
     `🔄 Trades: ${user.total_trades || 0}\n` +
     `💰 Volume: ${formatINR(user.total_volume || 0)}\n` +
     `${user.upi_id ? `💳 UPI: ${user.upi_id}\n` : ''}` +
     `${user.tron_wallet ? `🔗 TRON Wallet: \`${user.tron_wallet}\`\n` : ''}` +
-    `📅 Joined: ${new Date(user.created_at).toLocaleDateString('en-IN')}\n`;
+    `📅 Joined: ${new Date(user.created_at).toLocaleDateString('en-IN')}\n\n` +
+    `📊 *Your Limits:* ${tier.desc}\n`;
 
   if (reviews.length > 0) {
     text += `\n📝 *Recent Reviews:*\n`;
@@ -869,8 +963,10 @@ bot.on('message:text', async (ctx) => {
     const offer = await db.getOffer(ctx.session.offerDraft.offerId);
     if (!offer) { await ctx.reply('❌ Offer expired.'); ctx.session.step = null; return; }
 
-    if (isNaN(amount) || amount < offer.min_limit || amount > offer.max_limit) {
-      await ctx.reply(`❌ Amount must be between ${formatINR(offer.min_limit)} – ${formatINR(offer.max_limit)}:`);
+    const minTrade = ctx.session.offerDraft.minTrade || offer.min_limit;
+    const maxTrade = ctx.session.offerDraft.maxTrade || offer.max_limit;
+    if (isNaN(amount) || amount < minTrade || amount > maxTrade) {
+      await ctx.reply(`❌ Amount must be between ${formatINR(minTrade)} – ${formatINR(maxTrade)}:`);
       return;
     }
 
@@ -1338,6 +1434,46 @@ bot.catch((err) => {
   else console.error('Unknown error:', e);
 });
 
+// ─── Auto-timeout for stuck trades ───
+async function checkExpiredTrades() {
+  try {
+    // 1. Cancel awaiting_deposit trades older than 30 minutes
+    const expired = await db.getExpiredTrades(30 * 60 * 1000);
+    for (const trade of expired) {
+      await db.updateTrade(trade.id, { status: 'cancelled', cancel_reason: 'Auto-cancelled: deposit not received within 30 minutes' });
+
+      // Notify buyer
+      const fullTrade = await db.getTrade(trade.id);
+      if (fullTrade?.buyer?.telegram_id) {
+        await bot.api.sendMessage(fullTrade.buyer.telegram_id,
+          `⏰ *Trade Auto-Cancelled*\n\nTrade expired — seller did not deposit ${trade.escrow_usdt_amount} ${trade.crypto} within 30 minutes.\n\nYou were NOT charged anything.`,
+          { parse_mode: 'Markdown' }
+        ).catch(() => {});
+      }
+      if (fullTrade?.seller?.telegram_id) {
+        await bot.api.sendMessage(fullTrade.seller.telegram_id,
+          `⏰ *Trade Auto-Cancelled*\n\nYou didn't deposit within 30 minutes so the trade was cancelled.\n\nPlease deposit faster next time to avoid this.`,
+          { parse_mode: 'Markdown' }
+        ).catch(() => {});
+      }
+      console.log(`⏰ Auto-cancelled expired trade: ${trade.id}`);
+    }
+
+    // 2. Alert admin about paid trades waiting > 2 hours (seller hasn't released)
+    const overdue = await db.getOverduePaidTrades(120 * 60 * 1000);
+    for (const trade of overdue) {
+      if (process.env.ADMIN_CHAT_ID) {
+        await bot.api.sendMessage(process.env.ADMIN_CHAT_ID,
+          `⚠️ *Overdue Trade Alert*\n\nTrade has been in "paid" status for 2+ hours!\n\nTrade ID: \`${trade.id}\`\nBuyer: ${trade.buyer?.name}\nSeller: ${trade.seller?.name}\nAmount: ${formatINR(trade.inr_amount)}\n\nSeller may need assistance.`,
+          { parse_mode: 'Markdown' }
+        ).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.error('Timeout monitor error:', e.message);
+  }
+}
+
 // ─── Background deposit monitor (checks every 60s) ───
 async function checkPendingDeposits() {
   try {
@@ -1388,10 +1524,12 @@ async function checkPendingDeposits() {
   }
 }
 
-// Run monitor if either escrow wallet is configured
+// Run monitors
 if (process.env.TRON_WALLET_ADDRESS || process.env.SOLANA_WALLET_ADDRESS) {
-  setInterval(checkPendingDeposits, 60_000);
+  setInterval(checkPendingDeposits, 60_000);   // check deposits every 60s
+  setInterval(checkExpiredTrades, 2 * 60_000); // check expired trades every 2 min
   console.log('🔍 Background deposit monitor active (60s interval)');
+  console.log('⏰ Auto-timeout monitor active (2min interval)');
   if (process.env.TRON_WALLET_ADDRESS) console.log('  ✅ TRON (USDT) escrow active');
   if (process.env.SOLANA_WALLET_ADDRESS) console.log('  ✅ Solana (SOL) escrow active');
 } else {

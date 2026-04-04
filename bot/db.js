@@ -157,6 +157,36 @@ async function getAdminStats() {
   };
 }
 
+// ─── Safety helpers ───
+async function getActiveTradesCount(userId) {
+  const { count } = await supabase
+    .from('trades')
+    .select('id', { count: 'exact', head: true })
+    .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`)
+    .in('status', ['awaiting_deposit', 'crypto_locked', 'paid', 'escrow']);
+  return count || 0;
+}
+
+async function getExpiredTrades(depositTimeoutMs = 30 * 60 * 1000) {
+  const cutoff = new Date(Date.now() - depositTimeoutMs).toISOString();
+  const { data } = await supabase
+    .from('trades')
+    .select('*')
+    .eq('status', 'awaiting_deposit')
+    .lt('created_at', cutoff);
+  return data || [];
+}
+
+async function getOverduePaidTrades(timeoutMs = 120 * 60 * 1000) {
+  const cutoff = new Date(Date.now() - timeoutMs).toISOString();
+  const { data } = await supabase
+    .from('trades')
+    .select('*, buyer:profiles!buyer_id(*), seller:profiles!seller_id(*)')
+    .eq('status', 'paid')
+    .lt('updated_at', cutoff);
+  return data || [];
+}
+
 // ─── Escrow helpers ───
 async function getPendingDeposits() {
   const { data } = await supabase
@@ -216,5 +246,6 @@ module.exports = {
   createOffer, getActiveOffers, getOffer, getUserOffers, deactivateOffer,
   createTrade, getTrade, getUserTrades, updateTrade,
   addReview, getUserReviews, getAdminStats,
+  getActiveTradesCount, getExpiredTrades, getOverduePaidTrades,
   getPendingDeposits, markDepositReceived, markTradeReleased, markTradeRefunded,
 };
