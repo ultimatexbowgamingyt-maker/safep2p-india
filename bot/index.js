@@ -20,6 +20,12 @@ bot.use((ctx, next) => {
   return next();
 });
 
+// ─── Fee config ───
+const PLATFORM_FEE_PERCENT = 0.5; // 0.5% per trade
+function calcFee(inrAmount) {
+  return Math.round(inrAmount * PLATFORM_FEE_PERCENT / 100);
+}
+
 // ─── Helper ───
 function formatINR(n) {
   return '₹' + Number(n).toLocaleString('en-IN');
@@ -303,6 +309,7 @@ bot.callbackQuery(/^confirm_release_(.+)$/, async (ctx) => {
 
   const trade = await db.getTrade(tradeId);
   const buyer = trade.buyer;
+  const fee = trade.fee_amount || calcFee(trade.inr_amount);
 
   // Notify buyer
   if (buyer?.telegram_id) {
@@ -311,6 +318,19 @@ bot.callbackQuery(/^confirm_release_(.+)$/, async (ctx) => {
       `*${trade.crypto_amount} ${trade.crypto}* has been released!\n\n` +
       `⭐ Please rate the seller:`,
       { parse_mode: 'Markdown', reply_markup: kb.ratingKeyboard(tradeId) }
+    ).catch(() => {});
+  }
+
+  // Notify admin of fee earned
+  if (process.env.ADMIN_CHAT_ID) {
+    await bot.api.sendMessage(process.env.ADMIN_CHAT_ID,
+      `💰 *Fee Earned!*\n\n` +
+      `Trade: ${trade.crypto_amount} ${trade.crypto}\n` +
+      `Trade Value: ${formatINR(trade.inr_amount)}\n` +
+      `✅ Fee Collected: *${formatINR(fee)}*\n\n` +
+      `Buyer: ${trade.buyer?.name}\n` +
+      `Seller: ${trade.seller?.name}`,
+      { parse_mode: 'Markdown' }
     ).catch(() => {});
   }
 
@@ -480,6 +500,22 @@ bot.callbackQuery('start_kyc', async (ctx) => {
   );
 });
 
+// ─── Admin stats ───
+bot.command('stats', async (ctx) => {
+  if (String(ctx.from.id) !== process.env.ADMIN_CHAT_ID) return;
+  const stats = await db.getAdminStats();
+  await ctx.reply(
+    `📊 *SafeP2P India — Stats*\n\n` +
+    `👥 Total Users: *${stats.totalUsers}*\n` +
+    `📋 Total Offers: *${stats.totalOffers}*\n` +
+    `🔄 Total Trades: *${stats.totalTrades}*\n` +
+    `✅ Completed: *${stats.completedTrades}*\n` +
+    `💰 Total Volume: *${formatINR(stats.totalVolume)}*\n` +
+    `💵 Total Fees Earned: *${formatINR(stats.totalFees)}*`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
 // ─── SAFETY TIPS ───
 bot.hears('💡 Safety Tips', async (ctx) => {
   await ctx.reply(
@@ -593,6 +629,8 @@ bot.on('message:text', async (ctx) => {
 
     const cryptoAmount = (amount / offer.rate).toFixed(8);
     const isBuying = offer.type === 'sell';
+    const fee = calcFee(amount);
+    const totalPayable = amount + fee;
 
     // Create trade
     const trade = await db.createTrade({
@@ -602,6 +640,7 @@ bot.on('message:text', async (ctx) => {
       crypto: offer.crypto,
       crypto_amount: cryptoAmount,
       inr_amount: amount,
+      fee_amount: fee,
       rate: offer.rate,
       payment_method: offer.payment_methods[0],
       status: 'escrow',
@@ -626,9 +665,11 @@ bot.on('message:text', async (ctx) => {
     await ctx.reply(
       `🎉 *Trade Created!*\n\n` +
       `🔒 *${cryptoAmount} ${offer.crypto}* is now locked in escrow\n` +
-      `💰 Amount: *${formatINR(amount)}*\n` +
+      `💰 Trade Amount: *${formatINR(amount)}*\n` +
+      `📊 Platform Fee (0.5%): *${formatINR(fee)}*\n` +
+      `💵 Total to Pay: *${formatINR(totalPayable)}*\n` +
       `💳 Pay via: *${offer.payment_methods.join(' / ')}*\n\n` +
-      `${isBuying ? '➡️ Send payment to the seller, then confirm.' : '⏳ Wait for buyer to send payment.'}`,
+      `${isBuying ? '➡️ Send total amount to the seller, then confirm.' : '⏳ Wait for buyer to send payment.'}`,
       {
         parse_mode: 'Markdown',
         reply_markup: kb.tradeActionsKeyboard(trade, user.id),

@@ -135,10 +135,32 @@ async function getUserReviews(userId) {
   return data || [];
 }
 
+async function getAdminStats() {
+  const [users, offers, trades, completed] = await Promise.all([
+    supabase.from('profiles').select('id', { count: 'exact', head: true }),
+    supabase.from('offers').select('id', { count: 'exact', head: true }),
+    supabase.from('trades').select('id', { count: 'exact', head: true }),
+    supabase.from('trades').select('inr_amount, fee_amount').eq('status', 'completed'),
+  ]);
+
+  const completedTrades = completed.data || [];
+  const totalVolume = completedTrades.reduce((s, t) => s + Number(t.inr_amount), 0);
+  const totalFees = completedTrades.reduce((s, t) => s + Number(t.fee_amount || 0), 0);
+
+  return {
+    totalUsers: users.count || 0,
+    totalOffers: offers.count || 0,
+    totalTrades: trades.count || 0,
+    completedTrades: completedTrades.length,
+    totalVolume,
+    totalFees,
+  };
+}
+
 module.exports = {
   supabase,
   getOrCreateUser, getProfile, getProfileById, updateProfile,
   createOffer, getActiveOffers, getOffer, getUserOffers, deactivateOffer,
   createTrade, getTrade, getUserTrades, updateTrade,
-  addReview, getUserReviews,
+  addReview, getUserReviews, getAdminStats,
 };
