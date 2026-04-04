@@ -761,6 +761,29 @@ bot.on('message:text', async (ctx) => {
     );
     return;
   }
+
+  // ── Offer terms + create ──
+  if (step === 'offer_terms') {
+    const draft = ctx.session.offerDraft;
+    draft.terms = text.toLowerCase() === 'skip' ? null : text;
+    try {
+      await db.createOffer(user.id, draft);
+      ctx.session.step = null;
+      ctx.session.offerDraft = null;
+      await ctx.reply(
+        `✅ *Offer Posted!*\n\n` +
+        `${draft.type === 'sell' ? '🟢 SELL' : '🔵 BUY'} ${draft.crypto}\n` +
+        `💰 Rate: ${formatINR(draft.rate)}\n` +
+        `📊 Limit: ${formatINR(draft.min_limit)} – ${formatINR(draft.max_limit)}\n` +
+        `💳 ${draft.payment_methods.join(', ')}\n\n` +
+        `Your offer is now live! Traders can find it in the marketplace.`,
+        { parse_mode: 'Markdown', reply_markup: kb.mainMenu() }
+      );
+    } catch (e) {
+      await ctx.reply(`❌ Error creating offer: ${e.message}`);
+    }
+    return;
+  }
 });
 
 // ── Payment method selection for offers ──
@@ -784,34 +807,6 @@ bot.callbackQuery(/^pay_(.+)$/, async (ctx) => {
   else ctx.session.selectedPayments.push(val);
 
   await ctx.editMessageReplyMarkup({ reply_markup: kb.paymentKeyboard(ctx.session.selectedPayments) });
-});
-
-// Offer terms + create
-bot.on('message:text', async (ctx) => {
-  if (ctx.session.step !== 'offer_terms') return;
-
-  const text = ctx.message.text.trim();
-  const user = await db.getOrCreateUser(ctx.from);
-  const draft = ctx.session.offerDraft;
-  draft.terms = text.toLowerCase() === 'skip' ? null : text;
-
-  try {
-    await db.createOffer(user.id, draft);
-    ctx.session.step = null;
-    ctx.session.offerDraft = null;
-
-    await ctx.reply(
-      `✅ *Offer Posted!*\n\n` +
-      `${draft.type === 'sell' ? '🟢 SELL' : '🔵 BUY'} ${draft.crypto}\n` +
-      `💰 Rate: ${formatINR(draft.rate)}\n` +
-      `📊 Limit: ${formatINR(draft.min_limit)} – ${formatINR(draft.max_limit)}\n` +
-      `💳 ${draft.payment_methods.join(', ')}\n\n` +
-      `Your offer is now live! Traders can find it in the marketplace.`,
-      { parse_mode: 'Markdown', reply_markup: kb.mainMenu() }
-    );
-  } catch (e) {
-    await ctx.reply(`❌ Error creating offer: ${e.message}`);
-  }
 });
 
 // ─── Error handling ───
