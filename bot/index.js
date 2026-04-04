@@ -4,6 +4,32 @@ require('dotenv').config({ path: require('path').join(__dirname, '.env'), overri
 const db = require('./db');
 const kb = require('./keyboards');
 const escrow = require('./escrow');
+const solanaEscrow = require('./solana-escrow');
+
+// Pick escrow module based on crypto
+function getEscrow(crypto) {
+  return crypto === 'SOL' ? solanaEscrow : escrow;
+}
+
+function getNetworkLabel(crypto) {
+  return crypto === 'SOL' ? 'Solana' : 'TRON (TRC20)';
+}
+
+function getAddressLabel(crypto) {
+  return crypto === 'SOL' ? 'Solana wallet address' : 'TRON (TRC20) wallet address';
+}
+
+function getAddressExample(crypto) {
+  return crypto === 'SOL'
+    ? '`7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU`'
+    : '`TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE`';
+}
+
+function isValidWalletAddress(crypto, address) {
+  return crypto === 'SOL'
+    ? solanaEscrow.isValidSolanaAddress(address)
+    : escrow.isValidTronAddress(address);
+}
 
 const bot = new Bot(process.env.BOT_TOKEN);
 
@@ -333,7 +359,8 @@ bot.callbackQuery(/^check_deposit_(.+)$/, async (ctx) => {
   await ctx.editMessageText('🔍 *Checking blockchain for your deposit...*\n\nThis may take 30–60 seconds.', { parse_mode: 'Markdown' });
 
   const sinceTimestamp = new Date(trade.created_at).getTime();
-  const deposit = await escrow.checkDeposit(trade.escrow_usdt_amount, sinceTimestamp);
+  const escrowModule = getEscrow(trade.crypto);
+  const deposit = await escrowModule.checkDeposit(trade.escrow_usdt_amount, sinceTimestamp);
 
   if (deposit) {
     // Deposit found! Lock trade
@@ -408,13 +435,16 @@ bot.callbackQuery(/^confirm_release_(.+)$/, async (ctx) => {
     return;
   }
 
-  await ctx.editMessageText('⏳ *Sending USDT to buyer\'s wallet...*\n\nPlease wait, confirming on blockchain.', { parse_mode: 'Markdown' });
+  const network = getNetworkLabel(trade.crypto);
+  await ctx.editMessageText(`⏳ *Sending ${trade.crypto} to buyer's wallet...*\n\nPlease wait, confirming on ${network}.`, { parse_mode: 'Markdown' });
 
   // Calculate: send (escrow amount - fee) to buyer, fee stays in master wallet
   const feeUsdt = trade.escrow_usdt_amount * PLATFORM_FEE_PERCENT / 100;
   const sendAmount = parseFloat((trade.escrow_usdt_amount - feeUsdt).toFixed(6));
 
-  const result = await escrow.sendUSDT(trade.buyer_wallet, sendAmount);
+  const escrowModule = getEscrow(trade.crypto);
+  const sendFn = trade.crypto === 'SOL' ? escrowModule.sendSOL : escrowModule.sendUSDT;
+  const result = await sendFn(trade.buyer_wallet, sendAmount);
 
   if (result.success) {
     await db.markTradeReleased(tradeId, result.txId);
@@ -669,17 +699,23 @@ bot.command('balance', async (ctx) => {
 
   await ctx.reply('🔍 Checking escrow wallet balances...');
 
-  const [usdtBal, trxBal] = await Promise.all([
+  const [usdtBal, trxBal, solBal] = await Promise.all([
     escrow.getUSDTBalance(),
     escrow.getTRXBalance(),
+    solanaEscrow.getSOLBalance(),
   ]);
 
   await ctx.reply(
-    `🏦 *Escrow Wallet Balance*\n\n` +
+    `🏦 *Escrow Wallets Balance*\n\n` +
+    `*TRON Escrow (USDT):*\n` +
     `💵 USDT: *${usdtBal.toFixed(2)}*\n` +
-    `⛽ TRX (gas): *${trxBal.toFixed(2)}*\n\n` +
-    `📍 Wallet: \`${escrow.getMasterAddress()}\`\n\n` +
-    `${trxBal < 10 ? '⚠️ *Low TRX!* Add TRX for gas fees.' : '✅ Gas balance OK.'}`,
+    `⛽ TRX (gas): *${trxBal.toFixed(2)}*\n` +
+    `📍 \`${escrow.getMasterAddress()}\`\n` +
+    `${trxBal < 10 ? '⚠️ Low TRX! Add TRX for gas.' : '✅ TRX OK'}\n\n` +
+    `*Solana Escrow (SOL):*\n` +
+    `🟣 SOL: *${solBal.toFixed(4)}*\n` +
+    `📍 \`${solanaEscrow.getMasterAddress() || 'Not configured'}\`\n` +
+    `${solBal < 0.05 ? '⚠️ Low SOL! Add SOL for gas.' : '✅ SOL OK'}`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -709,7 +745,9 @@ bot.command('refund', async (ctx) => {
   }
 
   await ctx.reply('⏳ Sending refund...');
-  const result = await escrow.sendUSDT(toAddress, trade.escrow_usdt_amount);
+  const refundModule = getEscrow(trade.crypto);
+  const refundFn = trade.crypto === 'SOL' ? refundModule.sendSOL : refundModule.sendUSDT;
+  const result = await refundFn(toAddress, trade.escrow_usdt_amount);
 
   if (result.success) {
     await db.markTradeRefunded(tradeId, result.txId);
@@ -836,23 +874,29 @@ bot.on('message:text', async (ctx) => {
       return;
     }
 
-    // Save amount, ask for TRON wallet
+    // Save amount, ask for wallet
+    const offerForCrypto = await db.getOffer(ctx.session.offerDraft.offerId);
+    const crypto = offerForCrypto?.crypto || 'USDT';
     ctx.session.offerDraft.tradeAmount = amount;
+    ctx.session.offerDraft.crypto = crypto;
     ctx.session.step = 'enter_buyer_wallet';
     await ctx.reply(
       `💰 Trade amount: *${formatINR(amount)}*\n\n` +
-      `🔗 Now enter your *TRON (TRC20) wallet address* to receive USDT:\n\n` +
-      `Example: \`TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE\`\n\n` +
-      `⚠️ Double-check the address! USDT will be sent here after trade completes.`,
+      `🔗 Enter your *${getAddressLabel(crypto)}* to receive ${crypto}:\n\n` +
+      `Example: ${getAddressExample(crypto)}\n\n` +
+      `⚠️ Double-check the address! ${crypto} will be sent here after trade completes.`,
       { parse_mode: 'Markdown' }
     );
     return;
   }
 
-  // ── Buyer enters TRON wallet → create trade with real escrow ──
+  // ── Buyer enters wallet → create trade with real escrow ──
   if (step === 'enter_buyer_wallet') {
-    if (!escrow.isValidTronAddress(text)) {
-      await ctx.reply('❌ Invalid TRON address. Must start with T and be 34 characters. Try again:');
+    const crypto = ctx.session.offerDraft.crypto || 'USDT';
+
+    if (!isValidWalletAddress(crypto, text)) {
+      const label = getAddressLabel(crypto);
+      await ctx.reply(`❌ Invalid ${label}. Please check and try again:`);
       return;
     }
 
@@ -863,7 +907,10 @@ bot.on('message:text', async (ctx) => {
     const cryptoAmount = parseFloat((amount / offer.rate).toFixed(6));
     const isBuying = offer.type === 'sell';
     const fee = calcFee(amount);
-    const escrowAmount = escrow.generateUniqueAmount(cryptoAmount);
+    const escrowModule = getEscrow(offer.crypto);
+    const escrowAmount = escrowModule.generateUniqueAmount(cryptoAmount);
+    const masterAddr = escrowModule.getMasterAddress();
+    const network = getNetworkLabel(offer.crypto);
 
     // Create trade with awaiting_deposit status
     const trade = await db.createTrade({
@@ -884,7 +931,6 @@ bot.on('message:text', async (ctx) => {
     ctx.session.step = null;
     ctx.session.offerDraft = null;
 
-    const masterAddr = escrow.getMasterAddress();
     const sellerProfile = isBuying ? offer.seller : user;
     const sellerTgId = sellerProfile?.telegram_id;
 
@@ -892,16 +938,15 @@ bot.on('message:text', async (ctx) => {
     if (sellerTgId) {
       await bot.api.sendMessage(sellerTgId,
         `🔔 *New Trade — Deposit Required!*\n\n` +
-        `A buyer wants *${cryptoAmount} USDT* for *${formatINR(amount)}*\n\n` +
-        `🔐 *Send exactly:*\n\`${escrowAmount}\` USDT (TRC20)\n\n` +
+        `A buyer wants *${cryptoAmount} ${offer.crypto}* for *${formatINR(amount)}*\n\n` +
+        `🔐 *Send exactly:*\n\`${escrowAmount}\` ${offer.crypto} (${network})\n\n` +
         `📍 *To escrow wallet:*\n\`${masterAddr}\`\n\n` +
-        `⚠️ Send the *EXACT* amount shown above.\n` +
-        `This unique amount is how we match your deposit.\n\n` +
+        `⚠️ Send the *EXACT* amount — this is how we match your deposit.\n\n` +
         `After sending, tap the button below:`,
         {
           parse_mode: 'Markdown',
           reply_markup: new (require('grammy')).InlineKeyboard()
-            .text('✅ I\'ve Deposited USDT', `check_deposit_${trade.id}`).row()
+            .text(`✅ I've Deposited ${offer.crypto}`, `check_deposit_${trade.id}`).row()
             .text('❌ Cancel', `trade_cancel_${trade.id}`),
         }
       ).catch(() => {});
@@ -910,12 +955,12 @@ bot.on('message:text', async (ctx) => {
     // Confirm to buyer
     await ctx.reply(
       `🎉 *Trade Created — Waiting for Escrow Deposit*\n\n` +
-      `💰 Amount: *${formatINR(amount)}* for *${cryptoAmount} USDT*\n` +
+      `💰 Amount: *${formatINR(amount)}* for *${cryptoAmount} ${offer.crypto}*\n` +
       `📊 Platform Fee (0.5%): *${formatINR(fee)}*\n` +
-      `🔗 Your wallet: \`${text}\`\n\n` +
-      `⏳ The seller has been asked to deposit *${escrowAmount} USDT* into the escrow wallet.\n\n` +
-      `Once the deposit is confirmed on-chain, you'll be notified to send INR.\n\n` +
-      `🔒 *Your money is safe* — you don't pay anything until crypto is locked!`,
+      `🔗 Your wallet: \`${text}\`\n` +
+      `🌐 Network: *${network}*\n\n` +
+      `⏳ Seller deposits *${escrowAmount} ${offer.crypto}* into escrow.\n\n` +
+      `🔒 *You don't pay anything until crypto is locked on-chain!*`,
       { parse_mode: 'Markdown', reply_markup: kb.tradeActionsKeyboard(trade, user.id) }
     );
     return;
@@ -1300,7 +1345,8 @@ async function checkPendingDeposits() {
     for (const trade of pending) {
       if (!trade.escrow_usdt_amount) continue;
       const sinceTimestamp = new Date(trade.created_at).getTime();
-      const deposit = await escrow.checkDeposit(trade.escrow_usdt_amount, sinceTimestamp);
+      const escrowModule = getEscrow(trade.crypto);
+      const deposit = await escrowModule.checkDeposit(trade.escrow_usdt_amount, sinceTimestamp);
 
       if (deposit) {
         await db.markDepositReceived(trade.id, deposit.txId);
@@ -1342,12 +1388,14 @@ async function checkPendingDeposits() {
   }
 }
 
-// Only run monitor if TRON wallet is configured
-if (process.env.TRON_WALLET_ADDRESS && process.env.TRON_PRIVATE_KEY) {
-  setInterval(checkPendingDeposits, 60_000); // every 60 seconds
+// Run monitor if either escrow wallet is configured
+if (process.env.TRON_WALLET_ADDRESS || process.env.SOLANA_WALLET_ADDRESS) {
+  setInterval(checkPendingDeposits, 60_000);
   console.log('🔍 Background deposit monitor active (60s interval)');
+  if (process.env.TRON_WALLET_ADDRESS) console.log('  ✅ TRON (USDT) escrow active');
+  if (process.env.SOLANA_WALLET_ADDRESS) console.log('  ✅ Solana (SOL) escrow active');
 } else {
-  console.log('⚠️ TRON wallet not configured — escrow features disabled. Run: node generate-wallet.js');
+  console.log('⚠️ No escrow wallet configured. Run: node generate-wallet.js or node generate-solana-wallet.js');
 }
 
 // ─── Start bot ───
