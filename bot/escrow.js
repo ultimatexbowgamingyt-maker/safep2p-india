@@ -4,15 +4,20 @@ require('dotenv').config({ path: require('path').join(__dirname, '.env'), overri
 
 const USDT_CONTRACT = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'; // TRC20 USDT mainnet
 
-let tronWeb;
-try {
-  tronWeb = new TronWeb({
-    fullHost: 'https://api.trongrid.io',
-    headers: process.env.TRONGRID_API_KEY ? { 'TRON-PRO-API-KEY': process.env.TRONGRID_API_KEY } : {},
-    privateKey: process.env.TRON_PRIVATE_KEY,
-  });
-} catch (e) {
-  console.error('⚠️ TronWeb init failed:', e.message);
+// Lazy init — avoids constructor errors at startup if env not loaded yet
+function getTronWeb() {
+  const pk = process.env.TRON_PRIVATE_KEY;
+  if (!pk) return null;
+  try {
+    return new TronWeb({
+      fullHost: 'https://api.trongrid.io',
+      headers: process.env.TRONGRID_API_KEY ? { 'TRON-PRO-API-KEY': process.env.TRONGRID_API_KEY } : {},
+      privateKey: pk,
+    });
+  } catch (e) {
+    console.error('⚠️ TronWeb init failed:', e.message);
+    return null;
+  }
 }
 
 function getMasterAddress() {
@@ -28,6 +33,8 @@ function generateUniqueAmount(baseAmount) {
 // Check USDT balance of master wallet
 async function getUSDTBalance() {
   try {
+    const tronWeb = getTronWeb();
+    if (!tronWeb) return 0;
     const contract = await tronWeb.contract().at(USDT_CONTRACT);
     const balance = await contract.balanceOf(getMasterAddress()).call();
     return Number(balance) / 1e6;
@@ -40,8 +47,10 @@ async function getUSDTBalance() {
 // Check TRX balance of master wallet (needed for gas)
 async function getTRXBalance() {
   try {
+    const tronWeb = getTronWeb();
+    if (!tronWeb) return 0;
     const balance = await tronWeb.trx.getBalance(getMasterAddress());
-    return balance / 1e6; // TRX uses 6 decimals
+    return balance / 1e6;
   } catch (e) {
     console.error('TRX balance check error:', e.message);
     return 0;
@@ -62,10 +71,8 @@ async function checkDeposit(expectedAmount, sinceTimestamp) {
 
     if (!data.data || data.data.length === 0) return null;
 
-    // Find matching deposit by exact amount (unique micro-decimals)
     for (const tx of data.data) {
       const amount = Number(tx.value) / 1e6;
-      // Match within 0.000001 tolerance
       if (tx.to === masterAddr && Math.abs(amount - expectedAmount) < 0.000001) {
         return {
           txId: tx.transaction_id,
@@ -86,13 +93,14 @@ async function checkDeposit(expectedAmount, sinceTimestamp) {
 // Send USDT from master wallet to a recipient (buyer or refund to seller)
 async function sendUSDT(toAddress, amount) {
   try {
-    if (!tronWeb) throw new Error('TronWeb not initialized');
+    const tronWeb = getTronWeb();
+    if (!tronWeb) throw new Error('TronWeb not initialized — check TRON_PRIVATE_KEY in .env');
 
     const contract = await tronWeb.contract().at(USDT_CONTRACT);
-    const amountSun = Math.floor(amount * 1e6); // USDT has 6 decimals
+    const amountSun = Math.floor(amount * 1e6);
 
     const tx = await contract.transfer(toAddress, amountSun).send({
-      feeLimit: 100_000_000, // 100 TRX max fee
+      feeLimit: 100_000_000,
       shouldPollResponse: false,
     });
 
@@ -103,13 +111,9 @@ async function sendUSDT(toAddress, amount) {
   }
 }
 
-// Validate a TRON address
+// Validate a TRON address (starts with T, 34 chars)
 function isValidTronAddress(address) {
-  try {
-    return TronWeb.isAddress ? TronWeb.isAddress(address) : /^T[a-zA-Z0-9]{33}$/.test(address);
-  } catch {
-    return /^T[a-zA-Z0-9]{33}$/.test(address);
-  }
+  return /^T[a-zA-Z0-9]{33}$/.test(address);
 }
 
 module.exports = {
