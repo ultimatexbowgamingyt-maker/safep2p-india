@@ -1,5 +1,5 @@
 // ─── Real On-Chain Escrow — USDT TRC20 on TRON ───
-const TronWeb = require('tronweb');
+const { TronWeb } = require('tronweb');
 require('dotenv').config({ path: require('path').join(__dirname, '.env'), override: true });
 
 const USDT_CONTRACT = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'; // TRC20 USDT mainnet
@@ -106,9 +106,9 @@ async function sendUSDT(toAddress, amount) {
 // Validate a TRON address
 function isValidTronAddress(address) {
   try {
-    return TronWeb.isAddress(address);
+    return TronWeb.isAddress ? TronWeb.isAddress(address) : /^T[a-zA-Z0-9]{33}$/.test(address);
   } catch {
-    return false;
+    return /^T[a-zA-Z0-9]{33}$/.test(address);
   }
 }
 

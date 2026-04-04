@@ -2,7 +2,7 @@
 // Run: node generate-wallet.js
 // Then add the output to your bot/.env file
 
-const TronWeb = require('tronweb');
+const { TronWeb } = require('tronweb');
 
 async function main() {
   const tronWeb = new TronWeb({ fullHost: 'https://api.trongrid.io' });
