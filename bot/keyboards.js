@@ -8,7 +8,18 @@ function mainMenu() {
     .text('🛒 Buy Crypto').text('💰 Sell Crypto').row()
     .text('📋 My Offers').text('🔄 My Trades').row()
     .text('👤 Profile').text('💡 Safety Tips').row()
+    .text('❓ Help & Guide').row()
     .resized();
+}
+
+function helpMenuKeyboard() {
+  return new InlineKeyboard()
+    .text('📖 How to Trade', 'help_how_to_trade').row()
+    .text('🔒 How Escrow Works', 'help_escrow').row()
+    .text('💰 Platform Fee & Your Earnings', 'help_fee').row()
+    .text('⭐ Trust: Buyers & Sellers', 'help_trust').row()
+    .text('🚨 Stay Safe (Bank Freeze Guide)', 'help_safety').row()
+    .text('📋 All Commands', 'help_commands');
 }
 
 function cryptoKeyboard(action) {
@@ -82,5 +93,5 @@ function confirmKeyboard(action, id) {
 module.exports = {
   CRYPTOS, PAYMENT_METHODS,
   mainMenu, cryptoKeyboard, paymentKeyboard, offerListKeyboard,
-  tradeActionsKeyboard, ratingKeyboard, confirmKeyboard,
+  tradeActionsKeyboard, ratingKeyboard, confirmKeyboard, helpMenuKeyboard,
 };

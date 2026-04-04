@@ -569,7 +569,7 @@ bot.on('message:text', async (ctx) => {
   const text = ctx.message.text.trim();
 
   // Skip if main menu button
-  if (['🛒 Buy Crypto', '💰 Sell Crypto', '📋 My Offers', '🔄 My Trades', '👤 Profile', '💡 Safety Tips'].includes(text)) return;
+  if (['🛒 Buy Crypto', '💰 Sell Crypto', '📋 My Offers', '🔄 My Trades', '👤 Profile', '💡 Safety Tips', '❓ Help & Guide'].includes(text)) return;
 
   if (!step) return;
 
@@ -807,6 +807,222 @@ bot.callbackQuery(/^pay_(.+)$/, async (ctx) => {
   else ctx.session.selectedPayments.push(val);
 
   await ctx.editMessageReplyMarkup({ reply_markup: kb.paymentKeyboard(ctx.session.selectedPayments) });
+});
+
+// ─── HELP & GUIDE SYSTEM ───
+
+bot.hears('❓ Help & Guide', async (ctx) => {
+  await ctx.reply(
+    `❓ *SafeP2P India — Help Centre*\n\n` +
+    `Welcome! Choose a topic below to learn how everything works 👇`,
+    { parse_mode: 'Markdown', reply_markup: kb.helpMenuKeyboard() }
+  );
+});
+
+bot.command('help', async (ctx) => {
+  await ctx.reply(
+    `❓ *SafeP2P India — Help Centre*\n\n` +
+    `Welcome! Choose a topic below to learn how everything works 👇`,
+    { parse_mode: 'Markdown', reply_markup: kb.helpMenuKeyboard() }
+  );
+});
+
+bot.callbackQuery('help_how_to_trade', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(
+    `📖 *How to Trade on SafeP2P India*\n\n` +
+
+    `*🛒 To BUY crypto:*\n` +
+    `1. Tap *🛒 Buy Crypto* from the menu\n` +
+    `2. Pick the coin (USDT, BTC, ETH…)\n` +
+    `3. Browse available SELL offers from traders\n` +
+    `4. Tap an offer → enter the INR amount you want to spend\n` +
+    `5. A trade is created — crypto gets *locked in escrow*\n` +
+    `6. Send the INR to the seller via UPI/bank\n` +
+    `7. Tap ✅ *"I Have Paid"* in the trade\n` +
+    `8. Seller verifies payment and releases crypto to you ✅\n\n` +
+
+    `*💰 To SELL crypto:*\n` +
+    `1. Type /post to create your sell offer\n` +
+    `2. Set your rate, limits, payment methods\n` +
+    `3. Wait for a buyer to start a trade\n` +
+    `4. You'll get a notification — lock your crypto\n` +
+    `5. Buyer sends you INR → you verify it\n` +
+    `6. Tap ✅ *"Release Crypto"* to complete trade\n\n` +
+
+    `*⚡ Quick commands:*\n` +
+    `/post — Post a new offer\n` +
+    `/help — This guide\n` +
+    `/stats — Admin stats (owner only)`,
+    { parse_mode: 'Markdown', reply_markup: new (require('grammy')).InlineKeyboard().text('« Back to Help', 'help_back') }
+  );
+});
+
+bot.callbackQuery('help_escrow', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(
+    `🔒 *How Escrow Works*\n\n` +
+    `Escrow is a *safety lock* that protects both buyer and seller.\n\n` +
+
+    `*The problem without escrow:*\n` +
+    `❌ Buyer sends INR → Seller disappears with money\n` +
+    `❌ Seller sends crypto → Buyer cancels payment\n\n` +
+
+    `*How SafeP2P escrow solves this:*\n\n` +
+    `1️⃣ *Trade starts* → Seller's crypto is locked in escrow\n` +
+    `   (Seller can't run away — crypto is held safely)\n\n` +
+    `2️⃣ *Buyer pays* → Sends INR to seller's UPI/bank\n` +
+    `   Then taps "I Have Paid" in the bot\n\n` +
+    `3️⃣ *Seller verifies* → Checks bank/UPI for the payment\n` +
+    `   If received, taps "Release Crypto"\n\n` +
+    `4️⃣ *Trade complete* ✅ → Both parties rate each other\n\n` +
+
+    `*⚠️ What if there's a problem?*\n` +
+    `Either party can tap *"Dispute"* — Admin reviews and resolves.\n` +
+    `Crypto stays locked until dispute is settled.\n\n` +
+
+    `*Your money is NEVER at risk* as long as you follow the steps!`,
+    { parse_mode: 'Markdown', reply_markup: new (require('grammy')).InlineKeyboard().text('« Back to Help', 'help_back') }
+  );
+});
+
+bot.callbackQuery('help_fee', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(
+    `💰 *Platform Fee & How Owner Earns*\n\n` +
+
+    `*SafeP2P charges a 0.5% fee per trade.*\n\n` +
+
+    `*Example trade:*\n` +
+    `🔄 You trade ₹10,000 worth of USDT\n` +
+    `💵 Platform fee = ₹50 (0.5%)\n` +
+    `💰 Buyer pays ₹10,050 total\n` +
+    `✅ Seller receives ₹10,000\n` +
+    `🏦 SafeP2P earns ₹50\n\n` +
+
+    `*More trade examples:*\n` +
+    `• ₹1,000 trade → ₹5 fee\n` +
+    `• ₹50,000 trade → ₹250 fee\n` +
+    `• ₹1,00,000 trade → ₹500 fee\n\n` +
+
+    `*How to check earnings:*\n` +
+    `Owner types /stats to see:\n` +
+    `• Total trades completed\n` +
+    `• Total trading volume (INR)\n` +
+    `• Total fees collected 💸\n\n` +
+
+    `*As the platform grows, so do your earnings!*\n` +
+    `100 trades of ₹10,000 each = *₹5,000/month* in fees\n` +
+    `1,000 trades of ₹10,000 each = *₹50,000/month* in fees 🚀`,
+    { parse_mode: 'Markdown', reply_markup: new (require('grammy')).InlineKeyboard().text('« Back to Help', 'help_back') }
+  );
+});
+
+bot.callbackQuery('help_trust', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(
+    `⭐ *How to Trust Buyers & Sellers*\n\n` +
+    `SafeP2P has 3 layers of trust protection:\n\n` +
+
+    `*1️⃣ KYC Verification ✅*\n` +
+    `• Traders verify their PAN + Aadhaar\n` +
+    `• Verified users get a ✅ badge on offers\n` +
+    `• Always prefer ✅ verified traders\n` +
+    `• Unverified = higher risk, trade smaller amounts\n\n` +
+
+    `*2️⃣ Star Rating ⭐*\n` +
+    `• After every trade both parties rate 1–5 stars\n` +
+    `• Rating shows on every offer (e.g. ⭐4.8)\n` +
+    `• Check ratings before starting a trade:\n` +
+    `  ⭐⭐⭐⭐⭐ = Very trusted, trade freely\n` +
+    `  ⭐⭐⭐⭐ = Good, trade normally\n` +
+    `  ⭐⭐⭐ = Caution, trade small amounts\n` +
+    `  ⭐⭐ or less = Avoid or trade very small\n\n` +
+
+    `*3️⃣ Trade Count 🔄*\n` +
+    `• Shows how many trades completed\n` +
+    `• New trader (0–5 trades): trade small, max ₹2,000\n` +
+    `• Experienced (10+ trades): can trust more\n` +
+    `• Veteran (50+ trades): very reliable\n\n` +
+
+    `*🛡️ Golden Rules:*\n` +
+    `✅ Always use escrow — NEVER trade outside the bot\n` +
+    `✅ Verify payment in YOUR bank before releasing crypto\n` +
+    `✅ Check rating + trade count before big trades\n` +
+    `❌ Never trust screenshots of payment — check your bank app\n` +
+    `❌ Never release crypto under pressure`,
+    { parse_mode: 'Markdown', reply_markup: new (require('grammy')).InlineKeyboard().text('« Back to Help', 'help_back') }
+  );
+});
+
+bot.callbackQuery('help_safety', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(
+    `🚨 *Stay Safe — Bank Freeze Prevention*\n\n` +
+    `India's banks sometimes freeze accounts linked to crypto. Here's how to stay safe:\n\n` +
+
+    `*1️⃣ Keep trades small*\n` +
+    `Keep each trade under ₹50,000. Avoid large single transfers that trigger bank alerts.\n\n` +
+
+    `*2️⃣ Don't mention crypto*\n` +
+    `In UPI remarks, write "personal transfer" — never "USDT", "BTC", or "crypto".\n\n` +
+
+    `*3️⃣ Space out your trades*\n` +
+    `Avoid 5–10 transfers in one day. Spread across days and weeks.\n\n` +
+
+    `*4️⃣ Use a separate bank account*\n` +
+    `Dedicated account for P2P = your main account stays safe.\n\n` +
+
+    `*5️⃣ Only trade with verified users*\n` +
+    `Unverified traders may have "tainted" funds that trigger freezes on your account.\n\n` +
+
+    `*6️⃣ Keep records*\n` +
+    `Save screenshots of all trades in case your bank asks questions.\n\n` +
+
+    `*7️⃣ Use UPI for small amounts*\n` +
+    `UPI (under ₹10,000) attracts less scrutiny than NEFT/IMPS.\n\n` +
+
+    `*8️⃣ Don't rush*\n` +
+    `Scammers create urgency. Take your time. The escrow protects you.`,
+    { parse_mode: 'Markdown', reply_markup: new (require('grammy')).InlineKeyboard().text('« Back to Help', 'help_back') }
+  );
+});
+
+bot.callbackQuery('help_commands', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(
+    `📋 *All Bot Commands*\n\n` +
+    `*/start* — Welcome screen & main menu\n` +
+    `*/post* — Post a new buy/sell offer\n` +
+    `*/help* — Help & guide centre\n` +
+    `*/stats* — Platform stats (admin only)\n\n` +
+
+    `*Menu Buttons:*\n` +
+    `🛒 *Buy Crypto* — Browse sell offers\n` +
+    `💰 *Sell Crypto* — Browse buy offers\n` +
+    `📋 *My Offers* — View/manage your offers\n` +
+    `🔄 *My Trades* — Active & past trades\n` +
+    `👤 *Profile* — KYC, UPI, bank, ratings\n` +
+    `💡 *Safety Tips* — Bank freeze guide\n` +
+    `❓ *Help & Guide* — This help centre\n\n` +
+
+    `*In a trade:*\n` +
+    `💳 I Have Paid — After sending INR\n` +
+    `✅ Release Crypto — After verifying payment\n` +
+    `⚠️ Dispute — If there's a problem\n` +
+    `💬 Send Message — Chat with counterparty\n` +
+    `⭐ Rate Trader — After trade completes`,
+    { parse_mode: 'Markdown', reply_markup: new (require('grammy')).InlineKeyboard().text('« Back to Help', 'help_back') }
+  );
+});
+
+bot.callbackQuery('help_back', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(
+    `❓ *SafeP2P India — Help Centre*\n\n` +
+    `Welcome! Choose a topic below to learn how everything works 👇`,
+    { parse_mode: 'Markdown', reply_markup: kb.helpMenuKeyboard() }
+  );
 });
 
 // ─── Error handling ───
