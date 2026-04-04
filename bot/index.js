@@ -3,6 +3,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '.env'), overri
 
 const db = require('./db');
 const kb = require('./keyboards');
+const escrow = require('./escrow');
 
 const bot = new Bot(process.env.BOT_TOKEN);
 
@@ -32,18 +33,24 @@ function formatINR(n) {
 }
 
 function escrowStatusEmoji(status) {
-  const map = { escrow: '🔒', paid: '💳', released: '📤', completed: '✅', disputed: '⚠️', cancelled: '❌' };
+  const map = {
+    awaiting_deposit: '⏳', crypto_locked: '🔒', paid: '💳', released: '📤',
+    completed: '✅', disputed: '⚠️', cancelled: '❌', refunded: '↩️', escrow: '🔒',
+  };
   return map[status] || '❓';
 }
 
 function tradeStatusText(trade, userId) {
   const isBuyer = trade.buyer_id === userId;
   const s = trade.status;
-  if (s === 'escrow') return isBuyer ? '⏳ Waiting for your payment' : '🔒 Crypto locked in escrow, waiting for buyer payment';
-  if (s === 'paid') return isBuyer ? '⏳ Payment sent, waiting for seller to release' : '💳 Buyer says paid! Verify and release crypto';
-  if (s === 'completed') return '✅ Trade completed successfully!';
+  if (s === 'awaiting_deposit') return isBuyer ? '⏳ Waiting for seller to deposit USDT into escrow' : '⏳ Deposit your USDT to the escrow wallet';
+  if (s === 'crypto_locked') return isBuyer ? '🔒 USDT locked in escrow! Send INR to the seller now' : '🔒 Your USDT is safely locked. Waiting for buyer to pay INR';
+  if (s === 'escrow') return isBuyer ? '🔒 Crypto in escrow. Send INR payment' : '🔒 Crypto locked, waiting for buyer payment';
+  if (s === 'paid') return isBuyer ? '⏳ Payment sent, waiting for seller to release' : '💳 Buyer says paid! Verify your bank and release crypto';
+  if (s === 'completed') return '✅ Trade completed! USDT sent on-chain.';
   if (s === 'disputed') return '⚠️ Trade is under dispute. Admin will review.';
   if (s === 'cancelled') return '❌ Trade was cancelled.';
+  if (s === 'refunded') return '↩️ USDT refunded to seller.';
   return s;
 }
 
@@ -245,16 +252,34 @@ bot.callbackQuery(/^view_trade_(.+)$/, async (ctx) => {
   const isBuyer = trade.buyer_id === user.id;
   const counterparty = isBuyer ? trade.seller : trade.buyer;
 
-  const text =
+  let text =
     `${escrowStatusEmoji(trade.status)} *Trade Details*\n\n` +
     `💰 *${trade.crypto_amount} ${trade.crypto}* for *${formatINR(trade.inr_amount)}*\n` +
     `📈 Rate: ${formatINR(trade.rate)} per ${trade.crypto}\n` +
     `💳 Payment: ${trade.payment_method}\n\n` +
     `👤 ${isBuyer ? 'Seller' : 'Buyer'}: *${counterparty?.name || 'Trader'}* ⭐${counterparty?.rating || 0}\n` +
-    `${counterparty?.kyc_verified ? '✅ KYC Verified' : '❌ Not Verified'}\n\n` +
-    `📊 *Status:* ${tradeStatusText(trade, user.id)}\n\n` +
-    `${trade.status === 'escrow' && isBuyer ? '💡 *Send payment to the seller using the agreed method, then click "I Have Paid"*' : ''}` +
-    `${trade.status === 'paid' && !isBuyer ? '💡 *Check your account for payment, then click "Release Crypto"*' : ''}`;
+    `${counterparty?.kyc_verified ? '✅ KYC Verified' : '❌ Not Verified'}\n\n`;
+
+  // Show escrow details
+  if (trade.escrow_usdt_amount) {
+    text += `🔐 Escrow Amount: *${trade.escrow_usdt_amount} USDT*\n`;
+    if (trade.deposit_tx_id) text += `📥 Deposit TX: \`${trade.deposit_tx_id.slice(0, 16)}...\`\n`;
+    if (trade.release_tx_id) text += `📤 Release TX: \`${trade.release_tx_id.slice(0, 16)}...\`\n`;
+    text += '\n';
+  }
+
+  text += `📊 *Status:* ${tradeStatusText(trade, user.id)}\n\n`;
+
+  // Contextual help
+  if (trade.status === 'awaiting_deposit' && !isBuyer) {
+    text += `💡 *Send exactly \`${trade.escrow_usdt_amount}\` USDT (TRC20) to:*\n\`${escrow.getMasterAddress()}\`\n\nThen tap "I've Deposited"`;
+  }
+  if (trade.status === 'crypto_locked' && isBuyer) {
+    text += `💡 *USDT is locked! Send ${formatINR(trade.inr_amount)} to the seller via ${trade.payment_method}, then click "I Have Paid INR"*`;
+  }
+  if (trade.status === 'paid' && !isBuyer) {
+    text += `💡 *Check your bank for payment, then click "Release Crypto" to send USDT to buyer*`;
+  }
 
   await ctx.editMessageText(text, {
     parse_mode: 'Markdown',
@@ -293,51 +318,159 @@ bot.callbackQuery(/^confirm_paid_(.+)$/, async (ctx) => {
   await ctx.editMessageText('✅ Payment confirmed! Seller has been notified.\n\n⏳ Waiting for seller to release crypto...');
 });
 
-// Trade: release crypto
+// ── Check deposit on blockchain ──
+bot.callbackQuery(/^check_deposit_(.+)$/, async (ctx) => {
+  const tradeId = ctx.match[1];
+  const trade = await db.getTrade(tradeId);
+  await ctx.answerCallbackQuery();
+
+  if (!trade) { await ctx.editMessageText('❌ Trade not found.'); return; }
+  if (trade.status !== 'awaiting_deposit' && trade.status !== 'escrow') {
+    await ctx.editMessageText('ℹ️ Deposit already confirmed for this trade.');
+    return;
+  }
+
+  await ctx.editMessageText('🔍 *Checking blockchain for your deposit...*\n\nThis may take 30–60 seconds.', { parse_mode: 'Markdown' });
+
+  const sinceTimestamp = new Date(trade.created_at).getTime();
+  const deposit = await escrow.checkDeposit(trade.escrow_usdt_amount, sinceTimestamp);
+
+  if (deposit) {
+    // Deposit found! Lock trade
+    await db.markDepositReceived(tradeId, deposit.txId);
+    const updatedTrade = await db.getTrade(tradeId);
+    const buyer = updatedTrade.buyer;
+    const seller = updatedTrade.seller;
+
+    // Notify buyer: crypto is locked, send INR now
+    if (buyer?.telegram_id) {
+      await bot.api.sendMessage(buyer.telegram_id,
+        `🔒 *USDT Locked in Escrow!*\n\n` +
+        `*${trade.escrow_usdt_amount} USDT* has been deposited and confirmed on-chain.\n` +
+        `TX: \`${deposit.txId}\`\n\n` +
+        `💳 Now send *${formatINR(trade.inr_amount)}* to the seller via *${trade.payment_method}*.\n` +
+        `After payment, tap "I Have Paid INR".`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: kb.tradeActionsKeyboard(updatedTrade, buyer.id),
+        }
+      ).catch(() => {});
+    }
+
+    // Confirm to seller
+    await ctx.editMessageText(
+      `✅ *Deposit Confirmed!*\n\n` +
+      `🔒 *${trade.escrow_usdt_amount} USDT* is locked in escrow.\n` +
+      `TX: \`${deposit.txId}\`\n\n` +
+      `⏳ Waiting for buyer to send *${formatINR(trade.inr_amount)}* via ${trade.payment_method}.\n` +
+      `You'll be notified when buyer pays.`,
+      { parse_mode: 'Markdown', reply_markup: kb.tradeActionsKeyboard(updatedTrade, seller?.id) }
+    );
+  } else {
+    // Deposit not found yet
+    const masterAddr = escrow.getMasterAddress();
+    await ctx.editMessageText(
+      `❌ *Deposit Not Detected Yet*\n\n` +
+      `Make sure you sent *exactly* \`${trade.escrow_usdt_amount}\` USDT (TRC20)\n` +
+      `To: \`${masterAddr}\`\n\n` +
+      `⏱️ TRON transactions take 1–3 minutes to confirm.\n` +
+      `Tap the button to check again:`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: new (require('grammy')).InlineKeyboard()
+          .text('🔄 Check Again', `check_deposit_${tradeId}`).row()
+          .text('❌ Cancel Trade', `trade_cancel_${tradeId}`),
+      }
+    );
+  }
+});
+
+// Trade: release crypto — NOW SENDS USDT ON-CHAIN
 bot.callbackQuery(/^trade_release_(.+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   await ctx.editMessageText(
-    '✅ *Release Crypto*\n\n⚠️ Only release if you have confirmed receiving payment!\n\nThis action cannot be undone.',
+    '✅ *Release Crypto*\n\n' +
+    '⚠️ Only release if you have *confirmed receiving INR payment* in your bank!\n\n' +
+    '🔒 This will send USDT from escrow to the buyer\'s wallet.\n' +
+    'This action *cannot be undone*.',
     { parse_mode: 'Markdown', reply_markup: kb.confirmKeyboard('release', ctx.match[1]) }
   );
 });
 
 bot.callbackQuery(/^confirm_release_(.+)$/, async (ctx) => {
   const tradeId = ctx.match[1];
-  await db.updateTrade(tradeId, { status: 'completed' });
-  await ctx.answerCallbackQuery('Crypto released!');
-
   const trade = await db.getTrade(tradeId);
-  const buyer = trade.buyer;
-  const fee = trade.fee_amount || calcFee(trade.inr_amount);
+  await ctx.answerCallbackQuery();
 
-  // Notify buyer
-  if (buyer?.telegram_id) {
-    await bot.api.sendMessage(buyer.telegram_id,
+  if (!trade) { await ctx.editMessageText('❌ Trade not found.'); return; }
+  if (!trade.buyer_wallet) {
+    await ctx.editMessageText('❌ Buyer wallet address not set. Cannot release.');
+    return;
+  }
+
+  await ctx.editMessageText('⏳ *Sending USDT to buyer\'s wallet...*\n\nPlease wait, confirming on blockchain.', { parse_mode: 'Markdown' });
+
+  // Calculate: send (escrow amount - fee) to buyer, fee stays in master wallet
+  const feeUsdt = trade.escrow_usdt_amount * PLATFORM_FEE_PERCENT / 100;
+  const sendAmount = parseFloat((trade.escrow_usdt_amount - feeUsdt).toFixed(6));
+
+  const result = await escrow.sendUSDT(trade.buyer_wallet, sendAmount);
+
+  if (result.success) {
+    await db.markTradeReleased(tradeId, result.txId);
+    const fee = trade.fee_amount || calcFee(trade.inr_amount);
+
+    // Notify buyer
+    if (trade.buyer?.telegram_id) {
+      await bot.api.sendMessage(trade.buyer.telegram_id,
+        `🎉 *Trade Completed — USDT Sent!*\n\n` +
+        `*${sendAmount} USDT* sent to your wallet:\n` +
+        `\`${trade.buyer_wallet}\`\n\n` +
+        `TX: \`${result.txId}\`\n\n` +
+        `⭐ Please rate the seller:`,
+        { parse_mode: 'Markdown', reply_markup: kb.ratingKeyboard(tradeId) }
+      ).catch(() => {});
+    }
+
+    // Notify admin of fee earned
+    if (process.env.ADMIN_CHAT_ID) {
+      await bot.api.sendMessage(process.env.ADMIN_CHAT_ID,
+        `💰 *Fee Earned!*\n\n` +
+        `Trade: ${trade.escrow_usdt_amount} USDT\n` +
+        `Sent to buyer: ${sendAmount} USDT\n` +
+        `✅ Fee kept: *${feeUsdt.toFixed(6)} USDT* (~${formatINR(fee)})\n` +
+        `Release TX: \`${result.txId}\`\n\n` +
+        `Buyer: ${trade.buyer?.name}\n` +
+        `Seller: ${trade.seller?.name}`,
+        { parse_mode: 'Markdown' }
+      ).catch(() => {});
+    }
+
+    await ctx.editMessageText(
       `🎉 *Trade Completed!*\n\n` +
-      `*${trade.crypto_amount} ${trade.crypto}* has been released!\n\n` +
-      `⭐ Please rate the seller:`,
+      `✅ *${sendAmount} USDT* sent to buyer on-chain.\n` +
+      `TX: \`${result.txId}\`\n` +
+      `💰 Fee earned: ${feeUsdt.toFixed(6)} USDT\n\n` +
+      `⭐ Rate the buyer:`,
       { parse_mode: 'Markdown', reply_markup: kb.ratingKeyboard(tradeId) }
-    ).catch(() => {});
+    );
+  } else {
+    // Send failed — don't mark as complete
+    await ctx.editMessageText(
+      `❌ *USDT Transfer Failed*\n\n` +
+      `Error: ${result.error}\n\n` +
+      `The trade is still active. This usually means:\n` +
+      `• Not enough TRX for gas in escrow wallet\n` +
+      `• Network congestion — try again in a few minutes\n\n` +
+      `Tap Release again to retry:`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: new (require('grammy')).InlineKeyboard()
+          .text('✅ Retry Release', `trade_release_${tradeId}`).row()
+          .text('⚠️ Dispute', `trade_dispute_${tradeId}`),
+      }
+    );
   }
-
-  // Notify admin of fee earned
-  if (process.env.ADMIN_CHAT_ID) {
-    await bot.api.sendMessage(process.env.ADMIN_CHAT_ID,
-      `💰 *Fee Earned!*\n\n` +
-      `Trade: ${trade.crypto_amount} ${trade.crypto}\n` +
-      `Trade Value: ${formatINR(trade.inr_amount)}\n` +
-      `✅ Fee Collected: *${formatINR(fee)}*\n\n` +
-      `Buyer: ${trade.buyer?.name}\n` +
-      `Seller: ${trade.seller?.name}`,
-      { parse_mode: 'Markdown' }
-    ).catch(() => {});
-  }
-
-  await ctx.editMessageText(
-    `🎉 *Trade Completed!*\n\nCrypto released to buyer.\n\n⭐ Rate the buyer:`,
-    { parse_mode: 'Markdown', reply_markup: kb.ratingKeyboard(tradeId) }
-  );
 });
 
 // Trade: dispute
@@ -450,6 +583,7 @@ bot.hears('👤 Profile', async (ctx) => {
     `🔄 Trades: ${user.total_trades || 0}\n` +
     `💰 Volume: ${formatINR(user.total_volume || 0)}\n` +
     `${user.upi_id ? `💳 UPI: ${user.upi_id}\n` : ''}` +
+    `${user.tron_wallet ? `🔗 TRON Wallet: \`${user.tron_wallet}\`\n` : ''}` +
     `📅 Joined: ${new Date(user.created_at).toLocaleDateString('en-IN')}\n`;
 
   if (reviews.length > 0) {
@@ -462,6 +596,7 @@ bot.hears('👤 Profile', async (ctx) => {
   const profileKb = new (require('grammy')).InlineKeyboard()
     .text('📝 Set UPI ID', 'set_upi').row()
     .text('🏦 Set Bank Details', 'set_bank').row()
+    .text('🔗 Set TRON Wallet', 'set_tron_wallet').row()
     .text('🛡️ Complete KYC', 'start_kyc');
 
   await ctx.reply(text, { parse_mode: 'Markdown', reply_markup: profileKb });
@@ -479,6 +614,18 @@ bot.callbackQuery('set_bank', async (ctx) => {
   ctx.session.step = 'enter_bank';
   await ctx.answerCallbackQuery();
   await ctx.reply('🏦 Enter your bank details in this format:\n\nBank Name | Account Number | IFSC Code\n\nExample: SBI | 1234567890 | SBIN0001234');
+});
+
+// Set TRON wallet
+bot.callbackQuery('set_tron_wallet', async (ctx) => {
+  ctx.session.step = 'enter_tron_wallet';
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    '🔗 Enter your TRON (TRC20) wallet address:\n\n' +
+    'Example: `TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE`\n\n' +
+    '⚠️ This is where you\'ll receive USDT from trades.',
+    { parse_mode: 'Markdown' }
+  );
 });
 
 // KYC
@@ -514,6 +661,68 @@ bot.command('stats', async (ctx) => {
     `💵 Total Fees Earned: *${formatINR(stats.totalFees)}*`,
     { parse_mode: 'Markdown' }
   );
+});
+
+// ─── Admin: escrow wallet balance ───
+bot.command('balance', async (ctx) => {
+  if (String(ctx.from.id) !== process.env.ADMIN_CHAT_ID) return;
+
+  await ctx.reply('🔍 Checking escrow wallet balances...');
+
+  const [usdtBal, trxBal] = await Promise.all([
+    escrow.getUSDTBalance(),
+    escrow.getTRXBalance(),
+  ]);
+
+  await ctx.reply(
+    `🏦 *Escrow Wallet Balance*\n\n` +
+    `💵 USDT: *${usdtBal.toFixed(2)}*\n` +
+    `⛽ TRX (gas): *${trxBal.toFixed(2)}*\n\n` +
+    `📍 Wallet: \`${escrow.getMasterAddress()}\`\n\n` +
+    `${trxBal < 10 ? '⚠️ *Low TRX!* Add TRX for gas fees.' : '✅ Gas balance OK.'}`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ─── Admin: refund USDT to seller (for cancelled/disputed trades) ───
+bot.command('refund', async (ctx) => {
+  if (String(ctx.from.id) !== process.env.ADMIN_CHAT_ID) return;
+  const args = ctx.message.text.split(' ');
+  if (args.length < 3) {
+    await ctx.reply('Usage: /refund <trade_id> <tron_address>\n\nRefunds escrowed USDT to the seller.');
+    return;
+  }
+
+  const tradeId = args[1];
+  const toAddress = args[2];
+
+  if (!escrow.isValidTronAddress(toAddress)) {
+    await ctx.reply('❌ Invalid TRON address.');
+    return;
+  }
+
+  const trade = await db.getTrade(tradeId);
+  if (!trade) { await ctx.reply('❌ Trade not found.'); return; }
+  if (!['disputed', 'cancelled', 'crypto_locked', 'awaiting_deposit'].includes(trade.status)) {
+    await ctx.reply('❌ Trade is not in a refundable state.');
+    return;
+  }
+
+  await ctx.reply('⏳ Sending refund...');
+  const result = await escrow.sendUSDT(toAddress, trade.escrow_usdt_amount);
+
+  if (result.success) {
+    await db.markTradeRefunded(tradeId, result.txId);
+    await ctx.reply(
+      `✅ *Refund Sent!*\n\n` +
+      `Amount: ${trade.escrow_usdt_amount} USDT\n` +
+      `To: \`${toAddress}\`\n` +
+      `TX: \`${result.txId}\``,
+      { parse_mode: 'Markdown' }
+    );
+  } else {
+    await ctx.reply(`❌ Refund failed: ${result.error}`);
+  }
 });
 
 // ─── SAFETY TIPS ───
@@ -627,12 +836,36 @@ bot.on('message:text', async (ctx) => {
       return;
     }
 
-    const cryptoAmount = (amount / offer.rate).toFixed(8);
+    // Save amount, ask for TRON wallet
+    ctx.session.offerDraft.tradeAmount = amount;
+    ctx.session.step = 'enter_buyer_wallet';
+    await ctx.reply(
+      `💰 Trade amount: *${formatINR(amount)}*\n\n` +
+      `🔗 Now enter your *TRON (TRC20) wallet address* to receive USDT:\n\n` +
+      `Example: \`TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE\`\n\n` +
+      `⚠️ Double-check the address! USDT will be sent here after trade completes.`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  // ── Buyer enters TRON wallet → create trade with real escrow ──
+  if (step === 'enter_buyer_wallet') {
+    if (!escrow.isValidTronAddress(text)) {
+      await ctx.reply('❌ Invalid TRON address. Must start with T and be 34 characters. Try again:');
+      return;
+    }
+
+    const offer = await db.getOffer(ctx.session.offerDraft.offerId);
+    if (!offer) { await ctx.reply('❌ Offer expired.'); ctx.session.step = null; return; }
+
+    const amount = ctx.session.offerDraft.tradeAmount;
+    const cryptoAmount = parseFloat((amount / offer.rate).toFixed(6));
     const isBuying = offer.type === 'sell';
     const fee = calcFee(amount);
-    const totalPayable = amount + fee;
+    const escrowAmount = escrow.generateUniqueAmount(cryptoAmount);
 
-    // Create trade
+    // Create trade with awaiting_deposit status
     const trade = await db.createTrade({
       offer_id: offer.id,
       buyer_id: isBuying ? user.id : offer.user_id,
@@ -643,37 +876,47 @@ bot.on('message:text', async (ctx) => {
       fee_amount: fee,
       rate: offer.rate,
       payment_method: offer.payment_methods[0],
-      status: 'escrow',
+      status: 'awaiting_deposit',
+      escrow_usdt_amount: escrowAmount,
+      buyer_wallet: text,
     });
 
     ctx.session.step = null;
+    ctx.session.offerDraft = null;
 
-    // Notify the offer creator
-    const seller = offer.seller;
-    if (seller?.telegram_id && seller.telegram_id !== String(ctx.from.id)) {
-      await bot.api.sendMessage(seller.telegram_id,
-        `🔔 *New Trade Started!*\n\n` +
-        `${user.name} wants to ${isBuying ? 'buy' : 'sell'} *${cryptoAmount} ${offer.crypto}* for *${formatINR(amount)}*\n\n` +
-        `🔒 Crypto is now in escrow.`,
+    const masterAddr = escrow.getMasterAddress();
+    const sellerProfile = isBuying ? offer.seller : user;
+    const sellerTgId = sellerProfile?.telegram_id;
+
+    // Notify seller to deposit crypto
+    if (sellerTgId) {
+      await bot.api.sendMessage(sellerTgId,
+        `🔔 *New Trade — Deposit Required!*\n\n` +
+        `A buyer wants *${cryptoAmount} USDT* for *${formatINR(amount)}*\n\n` +
+        `🔐 *Send exactly:*\n\`${escrowAmount}\` USDT (TRC20)\n\n` +
+        `📍 *To escrow wallet:*\n\`${masterAddr}\`\n\n` +
+        `⚠️ Send the *EXACT* amount shown above.\n` +
+        `This unique amount is how we match your deposit.\n\n` +
+        `After sending, tap the button below:`,
         {
           parse_mode: 'Markdown',
-          reply_markup: new (require('grammy')).InlineKeyboard().text('📄 View Trade', `view_trade_${trade.id}`),
+          reply_markup: new (require('grammy')).InlineKeyboard()
+            .text('✅ I\'ve Deposited USDT', `check_deposit_${trade.id}`).row()
+            .text('❌ Cancel', `trade_cancel_${trade.id}`),
         }
       ).catch(() => {});
     }
 
+    // Confirm to buyer
     await ctx.reply(
-      `🎉 *Trade Created!*\n\n` +
-      `🔒 *${cryptoAmount} ${offer.crypto}* is now locked in escrow\n` +
-      `💰 Trade Amount: *${formatINR(amount)}*\n` +
+      `🎉 *Trade Created — Waiting for Escrow Deposit*\n\n` +
+      `💰 Amount: *${formatINR(amount)}* for *${cryptoAmount} USDT*\n` +
       `📊 Platform Fee (0.5%): *${formatINR(fee)}*\n` +
-      `💵 Total to Pay: *${formatINR(totalPayable)}*\n` +
-      `💳 Pay via: *${offer.payment_methods.join(' / ')}*\n\n` +
-      `${isBuying ? '➡️ Send total amount to the seller, then confirm.' : '⏳ Wait for buyer to send payment.'}`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: kb.tradeActionsKeyboard(trade, user.id),
-      }
+      `🔗 Your wallet: \`${text}\`\n\n` +
+      `⏳ The seller has been asked to deposit *${escrowAmount} USDT* into the escrow wallet.\n\n` +
+      `Once the deposit is confirmed on-chain, you'll be notified to send INR.\n\n` +
+      `🔒 *Your money is safe* — you don't pay anything until crypto is locked!`,
+      { parse_mode: 'Markdown', reply_markup: kb.tradeActionsKeyboard(trade, user.id) }
     );
     return;
   }
@@ -723,6 +966,18 @@ bot.on('message:text', async (ctx) => {
     await db.updateProfile(ctx.from.id, { bank_name: parts[0], bank_account: parts[1], bank_ifsc: parts[2] });
     ctx.session.step = null;
     await ctx.reply(`✅ Bank details saved!\n\n🏦 ${parts[0]}\n💳 ${parts[1]}\n🏷️ IFSC: ${parts[2]}`);
+    return;
+  }
+
+  // ── Set TRON wallet ──
+  if (step === 'enter_tron_wallet') {
+    if (!escrow.isValidTronAddress(text)) {
+      await ctx.reply('❌ Invalid TRON address. Must start with T and be 34 characters. Try again:');
+      return;
+    }
+    await db.updateProfile(ctx.from.id, { tron_wallet: text });
+    ctx.session.step = null;
+    await ctx.reply(`✅ TRON wallet saved!\n\n🔗 \`${text}\``, { parse_mode: 'Markdown' });
     return;
   }
 
@@ -861,27 +1116,30 @@ bot.callbackQuery('help_how_to_trade', async (ctx) => {
 bot.callbackQuery('help_escrow', async (ctx) => {
   await ctx.answerCallbackQuery();
   await ctx.editMessageText(
-    `🔒 *How Escrow Works*\n\n` +
-    `Escrow is a *safety lock* that protects both buyer and seller.\n\n` +
+    `🔒 *How Real On-Chain Escrow Works*\n\n` +
+    `SafeP2P uses *real blockchain escrow* — not just a database status.\n\n` +
 
     `*The problem without escrow:*\n` +
-    `❌ Buyer sends INR → Seller disappears with money\n` +
-    `❌ Seller sends crypto → Buyer cancels payment\n\n` +
+    `❌ Buyer sends INR → Seller disappears\n` +
+    `❌ Seller sends crypto → Buyer never pays\n\n` +
 
-    `*How SafeP2P escrow solves this:*\n\n` +
-    `1️⃣ *Trade starts* → Seller's crypto is locked in escrow\n` +
-    `   (Seller can't run away — crypto is held safely)\n\n` +
-    `2️⃣ *Buyer pays* → Sends INR to seller's UPI/bank\n` +
-    `   Then taps "I Have Paid" in the bot\n\n` +
-    `3️⃣ *Seller verifies* → Checks bank/UPI for the payment\n` +
-    `   If received, taps "Release Crypto"\n\n` +
-    `4️⃣ *Trade complete* ✅ → Both parties rate each other\n\n` +
+    `*How SafeP2P real escrow protects you:*\n\n` +
+    `1️⃣ *Trade starts* → Seller deposits USDT to the bot's escrow wallet\n` +
+    `   Bot verifies deposit *on the TRON blockchain*\n\n` +
+    `2️⃣ *USDT locked* → Bot holds the USDT. Neither party can touch it.\n` +
+    `   Buyer now sends INR to seller's UPI/bank\n\n` +
+    `3️⃣ *Seller verifies INR* → Checks their bank for payment\n` +
+    `   Taps "Release Crypto"\n\n` +
+    `4️⃣ *Bot sends USDT* → USDT sent on-chain to buyer's TRON wallet ✅\n` +
+    `   0.5% fee automatically kept by platform\n\n` +
 
     `*⚠️ What if there's a problem?*\n` +
-    `Either party can tap *"Dispute"* — Admin reviews and resolves.\n` +
-    `Crypto stays locked until dispute is settled.\n\n` +
+    `Either party taps *"Dispute"* → Admin reviews\n` +
+    `Admin can force-release to buyer OR refund to seller\n` +
+    `USDT stays locked in escrow until resolved\n\n` +
 
-    `*Your money is NEVER at risk* as long as you follow the steps!`,
+    `*Nobody can steal your money!*\n` +
+    `Seller's USDT is on the blockchain — verifiable by anyone.`,
     { parse_mode: 'Markdown', reply_markup: new (require('grammy')).InlineKeyboard().text('« Back to Help', 'help_back') }
   );
 });
@@ -1034,6 +1292,63 @@ bot.catch((err) => {
   else if (e instanceof HttpError) console.error('HTTP error:', e);
   else console.error('Unknown error:', e);
 });
+
+// ─── Background deposit monitor (checks every 60s) ───
+async function checkPendingDeposits() {
+  try {
+    const pending = await db.getPendingDeposits();
+    for (const trade of pending) {
+      if (!trade.escrow_usdt_amount) continue;
+      const sinceTimestamp = new Date(trade.created_at).getTime();
+      const deposit = await escrow.checkDeposit(trade.escrow_usdt_amount, sinceTimestamp);
+
+      if (deposit) {
+        await db.markDepositReceived(trade.id, deposit.txId);
+
+        // Notify buyer
+        const fullTrade = await db.getTrade(trade.id);
+        const buyer = fullTrade?.buyer;
+        if (buyer?.telegram_id) {
+          await bot.api.sendMessage(buyer.telegram_id,
+            `🔒 *USDT Locked in Escrow!*\n\n` +
+            `*${trade.escrow_usdt_amount} USDT* confirmed on-chain.\n` +
+            `TX: \`${deposit.txId}\`\n\n` +
+            `💳 Now send *${formatINR(trade.inr_amount)}* to the seller via *${trade.payment_method}*.\n` +
+            `After payment, tap "I Have Paid INR".`,
+            {
+              parse_mode: 'Markdown',
+              reply_markup: kb.tradeActionsKeyboard(fullTrade, buyer.id),
+            }
+          ).catch(() => {});
+        }
+
+        // Notify seller
+        const seller = fullTrade?.seller;
+        if (seller?.telegram_id) {
+          await bot.api.sendMessage(seller.telegram_id,
+            `✅ *Deposit Confirmed!*\n\n` +
+            `Your *${trade.escrow_usdt_amount} USDT* deposit has been detected.\n` +
+            `TX: \`${deposit.txId}\`\n\n` +
+            `⏳ Waiting for buyer to pay INR.`,
+            { parse_mode: 'Markdown' }
+          ).catch(() => {});
+        }
+
+        console.log(`✅ Auto-detected deposit for trade ${trade.id}: ${deposit.txId}`);
+      }
+    }
+  } catch (e) {
+    console.error('Deposit monitor error:', e.message);
+  }
+}
+
+// Only run monitor if TRON wallet is configured
+if (process.env.TRON_WALLET_ADDRESS && process.env.TRON_PRIVATE_KEY) {
+  setInterval(checkPendingDeposits, 60_000); // every 60 seconds
+  console.log('🔍 Background deposit monitor active (60s interval)');
+} else {
+  console.log('⚠️ TRON wallet not configured — escrow features disabled. Run: node generate-wallet.js');
+}
 
 // ─── Start bot ───
 console.log('🛡️ SafeP2P India Bot starting...');

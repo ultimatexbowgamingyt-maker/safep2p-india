@@ -157,10 +157,64 @@ async function getAdminStats() {
   };
 }
 
+// ─── Escrow helpers ───
+async function getPendingDeposits() {
+  const { data } = await supabase
+    .from('trades')
+    .select('*')
+    .eq('status', 'awaiting_deposit')
+    .order('created_at', { ascending: true });
+  return data || [];
+}
+
+async function markDepositReceived(tradeId, depositTxId) {
+  const { data } = await supabase
+    .from('trades')
+    .update({
+      status: 'crypto_locked',
+      crypto_deposited: true,
+      deposit_tx_id: depositTxId,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', tradeId)
+    .select()
+    .single();
+  return data;
+}
+
+async function markTradeReleased(tradeId, releaseTxId) {
+  const { data } = await supabase
+    .from('trades')
+    .update({
+      status: 'completed',
+      release_tx_id: releaseTxId,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', tradeId)
+    .select()
+    .single();
+  return data;
+}
+
+async function markTradeRefunded(tradeId, refundTxId) {
+  const { data } = await supabase
+    .from('trades')
+    .update({
+      status: 'refunded',
+      release_tx_id: refundTxId,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', tradeId)
+    .select()
+    .single();
+  return data;
+}
+
 module.exports = {
   supabase,
   getOrCreateUser, getProfile, getProfileById, updateProfile,
   createOffer, getActiveOffers, getOffer, getUserOffers, deactivateOffer,
   createTrade, getTrade, getUserTrades, updateTrade,
   addReview, getUserReviews, getAdminStats,
+  getPendingDeposits, markDepositReceived, markTradeReleased, markTradeRefunded,
 };

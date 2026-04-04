@@ -58,19 +58,43 @@ function tradeActionsKeyboard(trade, userId) {
   const isBuyer = trade.buyer_id === userId;
   const isSeller = trade.seller_id === userId;
 
-  if (trade.status === 'escrow' && isBuyer) {
-    kb.text('💳 I Have Paid', `trade_paid_${trade.id}`).row();
+  // ── Awaiting seller deposit ──
+  if (trade.status === 'awaiting_deposit' && isSeller) {
+    kb.text('✅ I\'ve Deposited USDT', `check_deposit_${trade.id}`).row();
   }
+  if (trade.status === 'awaiting_deposit' && isBuyer) {
+    kb.text('🔄 Check Deposit Status', `check_deposit_${trade.id}`).row();
+  }
+
+  // ── Crypto locked, buyer pays INR ──
+  if (trade.status === 'crypto_locked' && isBuyer) {
+    kb.text('💳 I Have Paid INR', `trade_paid_${trade.id}`).row();
+  }
+
+  // ── Buyer paid, seller releases ──
   if (trade.status === 'paid' && isSeller) {
     kb.text('✅ Release Crypto', `trade_release_${trade.id}`).row();
   }
-  if (['escrow', 'paid'].includes(trade.status)) {
+
+  // ── Old status support ──
+  if (trade.status === 'escrow' && isBuyer) {
+    kb.text('💳 I Have Paid', `trade_paid_${trade.id}`).row();
+  }
+  if (trade.status === 'escrow' && isSeller) {
+    kb.text('✅ I\'ve Deposited USDT', `check_deposit_${trade.id}`).row();
+  }
+
+  // ── Dispute & Cancel ──
+  if (['awaiting_deposit', 'crypto_locked', 'paid', 'escrow'].includes(trade.status)) {
     kb.text('⚠️ Dispute', `trade_dispute_${trade.id}`).row();
     kb.text('❌ Cancel Trade', `trade_cancel_${trade.id}`).row();
   }
+
+  // ── Rate after completion ──
   if (trade.status === 'completed') {
     kb.text('⭐ Rate Trader', `trade_rate_${trade.id}`).row();
   }
+
   kb.text('💬 Send Message', `trade_msg_${trade.id}`).row();
   kb.text('🔄 Refresh', `trade_refresh_${trade.id}`);
   return kb;
