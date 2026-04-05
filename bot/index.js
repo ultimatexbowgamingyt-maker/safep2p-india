@@ -138,16 +138,60 @@ function tradeStatusText(trade, userId) {
 bot.command('start', async (ctx) => {
   const user = await db.getOrCreateUser(ctx.from);
 
+  // Show legal disclaimer to new users (0 trades, first time)
+  if (!user.terms_accepted) {
+    await ctx.reply(
+      `⚖️ *Legal Disclaimer — Please Read*\n\n` +
+      `SafeP2P India is a *peer-to-peer (P2P) trading platform* that connects buyers and sellers directly. It is NOT a crypto exchange.\n\n` +
+      `📌 *By using this bot, you agree:*\n\n` +
+      `1️⃣ You are trading on your own behalf and take full responsibility for your trades.\n\n` +
+      `2️⃣ Cryptocurrency trading involves financial risk. You may lose money.\n\n` +
+      `3️⃣ You are responsible for paying all applicable taxes (including 30% crypto tax + 1% TDS as per Indian law).\n\n` +
+      `4️⃣ This platform does NOT provide financial, legal, or tax advice.\n\n` +
+      `5️⃣ You will NOT use this platform for money laundering, fraud, or any illegal activity.\n\n` +
+      `6️⃣ SafeP2P India acts only as an escrow facilitator. We are NOT responsible for losses due to user error or market conditions.\n\n` +
+      `7️⃣ All disputes are subject to Indian law and jurisdiction.\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `Tap *✅ I Agree* to continue. If you disagree, do not use this bot.`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: new (require('grammy')).InlineKeyboard()
+          .text('✅ I Agree & Accept Terms', 'accept_terms'),
+      }
+    );
+    return;
+  }
+
   await ctx.reply(
-    `🛡️ *Welcome to SafeP2P India!*\n\n` +
-    `Hey ${user.name}! India's safest P2P crypto trading bot.\n\n` +
-    `🔒 *Escrow Protection* — Crypto locked until payment confirmed\n` +
-    `✅ *Verified Traders* — KYC verified users only\n` +
-    `⭐ *Reputation System* — Trade with trusted people\n` +
+    `🛡️ *Welcome back, ${user.name}!*\n\n` +
+    `India's safest P2P crypto trading bot.\n\n` +
+    `🔒 *Real Escrow* — Crypto locked on blockchain\n` +
+    `✅ *KYC Verified Traders* — Trust badges\n` +
+    `⭐ *Reputation System* — Rate every trade\n` +
     `💡 *Safety Tips* — Avoid bank freezes\n\n` +
     `Use the menu below to start trading 👇`,
     { parse_mode: 'Markdown', reply_markup: kb.mainMenu() }
   );
+});
+
+bot.callbackQuery('accept_terms', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await db.updateProfile(ctx.from.id, { terms_accepted: true });
+  const user = await db.getOrCreateUser(ctx.from);
+  await ctx.editMessageText(
+    `✅ *Terms Accepted!*\n\n` +
+    `Welcome to SafeP2P India, ${user.name}! 🎉\n\n` +
+    `🛡️ *You are protected by:*\n` +
+    `🔒 Real blockchain escrow\n` +
+    `🏅 Trader tier & badge system\n` +
+    `⚠️ Dispute resolution\n` +
+    `⏰ Auto-timeout on stuck trades\n\n` +
+    `Start with small trades (₹200–₹2,000) as a new trader.\n` +
+    `Complete trades to unlock higher limits!\n\n` +
+    `👇 Tap the menu to begin:`,
+    { parse_mode: 'Markdown' }
+  );
+  await ctx.reply('Use the menu below 👇', { reply_markup: kb.mainMenu() });
 });
 
 // ─── MAIN MENU HANDLERS ───
@@ -1067,7 +1111,9 @@ bot.on('message:text', async (ctx) => {
       `🔗 Your wallet: \`${text}\`\n` +
       `🌐 Network: *${network}*\n\n` +
       `⏳ Seller deposits *${escrowAmount} ${offer.crypto}* into escrow.\n\n` +
-      `🔒 *You don't pay anything until crypto is locked on-chain!*`,
+      `🔒 *You don't pay anything until crypto is locked on-chain!*\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `⚖️ *Reminder:* You are responsible for tax compliance on this trade as per Indian law.`,
       { parse_mode: 'Markdown', reply_markup: kb.tradeActionsKeyboard(trade, user.id) }
     );
     return;
