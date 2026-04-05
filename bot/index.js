@@ -504,10 +504,21 @@ bot.callbackQuery(/^check_deposit_(.+)$/, async (ctx) => {
 bot.callbackQuery(/^trade_release_(.+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   await ctx.editMessageText(
-    '✅ *Release Crypto*\n\n' +
-    '⚠️ Only release if you have *confirmed receiving INR payment* in your bank!\n\n' +
-    '🔒 This will send USDT from escrow to the buyer\'s wallet.\n' +
-    'This action *cannot be undone*.',
+    '🔐 *RELEASE CRYPTO — FINAL CHECK*\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━━\n' +
+    '✅ CHECK THESE BEFORE RELEASING:\n\n' +
+    '1️⃣ Open your *BANK APP* — not screenshot\n' +
+    '2️⃣ Confirm the *exact amount* is credited\n' +
+    '3️⃣ Make sure it says *"Success"* not "Pending"\n' +
+    '4️⃣ Check sender name matches the buyer\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━━\n' +
+    '❌ *NEVER release if:*\n' +
+    '• You only saw a screenshot\n' +
+    '• Payment shows "Pending"\n' +
+    '• Amount does not match\n' +
+    '• Buyer is pressuring you to hurry\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━━\n' +
+    '⚠️ *Once released, crypto CANNOT be recovered!*',
     { parse_mode: 'Markdown', reply_markup: kb.confirmKeyboard('release', ctx.match[1]) }
   );
 });
@@ -1390,27 +1401,56 @@ bot.callbackQuery('help_safety', async (ctx) => {
 bot.callbackQuery('help_commands', async (ctx) => {
   await ctx.answerCallbackQuery();
   await ctx.editMessageText(
-    `📋 *All Bot Commands*\n\n` +
-    `*/start* — Welcome screen & main menu\n` +
-    `*/post* — Post a new buy/sell offer\n` +
-    `*/help* — Help & guide centre\n` +
-    `*/stats* — Platform stats (admin only)\n\n` +
+    `📋 *Complete Command Guide*\n\n` +
 
-    `*Menu Buttons:*\n` +
-    `🛒 *Buy Crypto* — Browse sell offers\n` +
-    `💰 *Sell Crypto* — Browse buy offers\n` +
-    `📋 *My Offers* — View/manage your offers\n` +
-    `🔄 *My Trades* — Active & past trades\n` +
-    `👤 *Profile* — KYC, UPI, bank, ratings\n` +
-    `💡 *Safety Tips* — Bank freeze guide\n` +
-    `❓ *Help & Guide* — This help centre\n\n` +
+    `━━━ 👤 *USER COMMANDS* ━━━\n\n` +
 
-    `*In a trade:*\n` +
-    `💳 I Have Paid — After sending INR\n` +
-    `✅ Release Crypto — After verifying payment\n` +
-    `⚠️ Dispute — If there's a problem\n` +
-    `💬 Send Message — Chat with counterparty\n` +
-    `⭐ Rate Trader — After trade completes`,
+    `*/start*\n` +
+    `Opens the main menu. Use this to restart the bot anytime.\n\n` +
+
+    `*/post*\n` +
+    `Post a new buy or sell offer.\n` +
+    `Steps: Type → Sell/Buy → Coin → Rate → Min limit → Max limit → Payment methods → Terms\n` +
+    `Your offer goes live instantly for others to see.\n\n` +
+
+    `*/help*\n` +
+    `Opens this help centre with all guides.\n\n` +
+
+    `━━━ 🔘 *MENU BUTTONS* ━━━\n\n` +
+
+    `🛒 *Buy Crypto* — See sellers, pick offer, start trade\n` +
+    `💰 *Sell Crypto* — See buyers, pick offer, start trade\n` +
+    `📋 *My Offers* — View & delete your active offers\n` +
+    `🔄 *My Trades* — See all active & past trades\n` +
+    `👤 *Profile* — Set UPI, bank, TRON/SOL wallet, KYC\n` +
+    `💡 *Safety Tips* — Bank freeze prevention guide\n` +
+    `❓ *Help & Guide* — Full guide centre\n\n` +
+
+    `━━━ 🔄 *IN A TRADE* ━━━\n\n` +
+
+    `✅ *I've Deposited* — Seller taps after sending crypto to escrow\n` +
+    `💳 *I Have Paid INR* — Buyer taps after sending bank/UPI payment\n` +
+    `✅ *Release Crypto* — Seller taps ONLY after verifying payment in bank app\n` +
+    `⚠️ *Dispute* — If something is wrong, admin will review\n` +
+    `💬 *Send Message* — Chat directly with the other trader\n` +
+    `🔄 *Refresh* — Update trade status\n` +
+    `⭐ *Rate Trader* — Rate after trade completes\n\n` +
+
+    `━━━ 👑 *ADMIN COMMANDS* ━━━\n\n` +
+
+    `*/stats*\n` +
+    `Shows: Total users, offers, trades, volume, fees earned.\n\n` +
+
+    `*/balance*\n` +
+    `Shows USDT + TRX balance (TRON escrow) and SOL balance (Solana escrow).\n` +
+    `Check this regularly to ensure gas fees are available.\n\n` +
+
+    `*/refund <trade\\_id> <wallet\\_address>*\n` +
+    `Manually refund escrowed crypto back to seller.\n` +
+    `Use when: dispute resolved in seller's favour, trade stuck, fraud confirmed.\n` +
+    `Example: \`/refund abc-123 TQn9Y2khEs...\`\n\n` +
+
+    `💡 *Trade ID* — Find it in My Trades → tap on a trade`,
     { parse_mode: 'Markdown', reply_markup: new (require('grammy')).InlineKeyboard().text('« Back to Help', 'help_back') }
   );
 });
